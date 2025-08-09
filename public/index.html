@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Visualiseur d'accords et gammes - Piano</title>
+  <style>
+    :root{
+      --white:#fff; --black:#111; --key-border:#bbb;
+      --accent:#2b8cff; --accent-2:#ff8c42; --highlight-scale: rgba(43,140,255,0.25);
+      --highlight-chord: rgba(255,140,66,0.25);
+    }
+    body{font-family:Inter, system-ui, Helvetica, Arial; margin:0; padding:18px; background:#f4f6fb; color:#111}
+    h1{font-size:18px; margin:0 0 12px}
+    .app{max-width:980px; margin:0 auto}
+    .controls{display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:12px}
+    label{font-size:13px}
+    select, button, input[type=checkbox]{font-size:13px; padding:8px}
+    .kbd-wrap{background:#fff; border-radius:12px; padding:16px; box-shadow:0 6px 20px rgba(20,30,60,0.08)}
+    .piano{position:relative; user-select:none; height:180px; margin-top:12px}
+    .white-key{display:inline-block; width:48px; height:100%; border:1px solid var(--key-border); background:var(--white); position:relative; border-bottom-left-radius:6px; border-bottom-right-radius:6px}
+    .white-key.pressed{background:#e6f0ff}
+    .white-key .label{position:absolute; bottom:6px; left:6px; font-size:12px; color:#333}
+    .black-key{position:absolute; width:32px; height:110px; background:var(--black); top:0; margin-left:-16px; border-radius:4px; z-index:2; box-shadow:0 4px 8px rgba(0,0,0,0.4)}
+    .black-key.pressed{background:#333}
+    .note-highlight-scale{box-shadow:inset 0 -40px 0 var(--highlight-scale) !important}
+    .note-highlight-chord{box-shadow:inset 0 -40px 0 var(--highlight-chord) !important}
+    .note-root{outline:3px solid rgba(0,0,0,0.08); box-shadow:0 6px 18px rgba(0,0,0,0.08)}
+    .legend{display:flex; gap:8px; align-items:center; margin-top:10px}
+    .legend .pill{padding:6px 10px; border-radius:999px; font-size:12px}
+    .pill-scale{background:var(--highlight-scale)}
+    .pill-chord{background:var(--highlight-chord)}
+    .pill-root{background:var(--accent); color:#fff}
+    .footer-row{display:flex; gap:8px; align-items:center; margin-top:12px}
+    .small{font-size:12px; color:#555}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <h1>Visualiseur d'accords & gammes — Piano</h1>
+
+    <div class="controls">
+      <label>Mode: <select id="mode-select">
+        <option value="scale-major">Gamme majeure</option>
+        <option value="scale-minor">Gamme mineure (naturelle)</option>
+        <option value="chord-major">Accord majeur</option>
+        <option value="chord-minor">Accord mineur</option>
+        <option value="chord-dom7">Accord 7ème (dominant)</option>
+        <option value="chord-maj7">Accord maj7</option>
+        <option value="chord-m7">Accord m7</option>
+        <option value="chord-dim">Accord diminué</option>
+      </select></label>
+
+      <label><input type="checkbox" id="play-sound" checked/> Son</label>
+      <button id="clear-btn">Effacer sélection</button>
+      <div style="flex:1"></div>
+      <div class="small">Clique sur une touche pour sélectionner la note racine.</div>
+    </div>
+
+    <div class="kbd-wrap">
+      <div id="piano" class="piano"></div>
+      <div class="legend">
+        <div class="pill pill-root">Racine</div>
+        <div class="pill pill-chord">Accord</div>
+        <div class="pill pill-scale">Gamme</div>
+      </div>
+    </div>
+
+    <div class="footer-row small">
+      <div id="info">Aucune note sélectionnée.</div>
+    </div>
+  </div>
+
+  <script>
+    const NOTE_ORDER = [
+      {name:'C', black:false}, {name:'C#', black:true}, {name:'D', black:false},
+      {name:'D#', black:true}, {name:'E', black:false}, {name:'F', black:false},
+      {name:'F#', black:true}, {name:'G', black:false}, {name:'G#', black:true},
+      {name:'A', black:false}, {name:'A#', black:true}, {name:'B', black:false}
+    ];
+
+    const MODES = {
+      'scale-major': [0,2,4,5,7,9,11],
+      'scale-minor': [0,2,3,5,7,8,10],
+      'chord-major': [0,4,7],
+      'chord-minor': [0,3,7],
+      'chord-dom7': [0,4,7,10],
+      'chord-maj7': [0,4,7,11],
+      'chord-m7': [0,3,7,10],
+      'chord-dim': [0,3,6]
+    };
+
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    const audioCtx = AudioCtx ? new AudioCtx() : null;
+
+    function midiToFreq(midi){ return 440 * Math.pow(2, (midi - 69)/12); }
+
+    let startOctave = 4;
+    let notes = [];
+    let root = null;
+
+    const pianoEl = document.getElementById('piano');
+    const modeSelect = document.getElementById('mode-select');
+    const clearBtn = document.getElementById('clear-btn');
+    const info = document.getElementById('info');
+    const playSoundCheckbox = document.getElementById('play-sound');
+
+    function buildKeyboard(){
+      pianoEl.innerHTML = '';
+      notes = [];
+
+      for(let i = 0; i < 12; i++){
+        const note = NOTE_ORDER[i];
+        const octaveNumber = startOctave;
+        const midi = 12 + octaveNumber*12 + i;
+
+        const keyEl = document.createElement('div');
+        keyEl.className = note.black ? 'black-key' : 'white-key';
+        keyEl.dataset.midi = midi;
+        keyEl.dataset.name = note.name + octaveNumber;
+        keyEl.title = note.name + octaveNumber;
+
+        if(!note.black){
+          const lab = document.createElement('div');
+          lab.className = 'label';
+          lab.textContent = note.name + octaveNumber;
+          keyEl.appendChild(lab);
+          pianoEl.appendChild(keyEl);
+        } else {
+          pianoEl.appendChild(keyEl);
+        }
+
+        notes.push({midi, name:note.name, octave:octaveNumber, black:note.black, el:keyEl});
+      }
+
+      const whites = Array.from(pianoEl.querySelectorAll('.white-key'));
+      const whiteWidth = whites.length ? whites[0].getBoundingClientRect().width : 48;
+      pianoEl.style.width = (whiteWidth * whites.length) + 'px';
+
+      let runningWhite = 0;
+      notes.forEach(n=>{
+        if(!n.black){ runningWhite++; }
+        else {
+          const bw = n.el.getBoundingClientRect().width || 32;
+          const left = (runningWhite * whiteWidth) - (bw/2);
+          n.el.style.left = left + 'px';
+          n.el.style.position = 'absolute';
+        }
+      });
+
+      pianoEl.querySelectorAll('.white-key, .black-key').forEach(k=>{
+        k.addEventListener('click', ()=>{
+          const midi = parseInt(k.dataset.midi,10);
+          selectRoot(midi);
+        });
+      });
+    }
+
+    function clearHighlights(){
+      notes.forEach(n=>{
+        n.el.classList.remove('note-highlight-scale','note-highlight-chord','note-root');
+      });
+      root = null;
+      info.textContent = 'Aucune note sélectionnée.';
+    }
+
+    function selectRoot(midi){
+      root = midi;
+      updateHighlights();
+      info.textContent = 'Racine: '+getNoteName(root);
+      if(playSoundCheckbox.checked) playAndShow();
+    }
+
+    function getNoteName(midi){
+      const pitchClass = midi % 12;
+      return NOTE_ORDER[pitchClass].name + Math.floor((midi - 12)/12);
+    }
+
+    function updateHighlights(){
+      notes.forEach(n=>{ n.el.classList.remove('note-highlight-scale','note-highlight-chord','note-root'); });
+      if(root == null) return;
+      const mode = modeSelect.value;
+      const intervals = MODES[mode];
+      const isScale = mode.startsWith('scale');
+
+      notes.forEach(n=>{
+        if((n.midi - root) % 12 === 0) n.el.classList.add('note-root');
+      });
+
+      const pcs = intervals.map(i=> ((root + i) % 12));
+      notes.forEach(n=>{
+        if(pcs.includes(n.midi % 12)) n.el.classList.add(isScale ? 'note-highlight-scale' : 'note-highlight-chord');
+      });
+    }
+
+    function playAndShow(){
+      if(!audioCtx) return;
+      const mode = modeSelect.value;
+      const intervals = MODES[mode];
+      const isScale = mode.startsWith('scale');
+      let toPlay = [];
+      if(isScale){
+        toPlay = intervals.map(i=> root + i);
+        toPlay.push(root + 12);
+      } else {
+        toPlay = intervals.map(i=> root + i);
+        toPlay.push(root + 12);
+      }
+
+      const now = audioCtx.currentTime;
+      toPlay.forEach((midi, idx)=>{
+        const t = now + idx*0.25;
+        playNoteAtTime(midi, t, 0.22);
+        const key = notes.find(n=> n.midi === midi);
+        if(key){
+          setTimeout(()=> key.el.classList.add('pressed'), idx*250);
+          setTimeout(()=> key.el.classList.remove('pressed'), idx*250+220);
+        }
+      });
+    }
+
+    function playNoteAtTime(midi, time, dur){
+      if(!audioCtx) return;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = midiToFreq(midi);
+      gain.gain.setValueAtTime(0.0001, time);
+      gain.gain.exponentialRampToValueAtTime(0.25, time + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(time); osc.stop(time + dur + 0.02);
+    }
+
+    buildKeyboard();
+    clearBtn.addEventListener('click', clearHighlights);
+    modeSelect.addEventListener('change', updateHighlights);
+  </script>
+</body>
+</html>
+
